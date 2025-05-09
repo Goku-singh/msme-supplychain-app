@@ -38,20 +38,30 @@ if uploaded_file:
     st.line_chart(cat_df["Total Amount"])
 
     # Step 6: Holt-Winters Forecasting (12-month seasonal)
-    st.subheader("🔮 Sales Forecast (Next 6 Months)")
-    if len(cat_df) >= 12:
-        try:
-            model = ExponentialSmoothing(cat_df["Total Amount"], trend="add", seasonal="add", seasonal_periods=6)
-            fit = model.fit()
-            forecast = fit.forecast(6)
+    from sklearn.metrics import mean_absolute_percentage_error, mean_squared_error
+import numpy as np
 
-            forecast_df = forecast.reset_index()
-            forecast_df.columns = ["Month", "Forecasted Sales"]
-            st.line_chart(forecast)
+# Ensure there are enough data points
+if len(cat_df) > 12:
+    # Split into train/test (last 3 months as test)
+    train = cat_df.iloc[:-3]
+    test = cat_df.iloc[-3:]
 
-            st.write("📌 Forecasted Values:")
-            st.dataframe(forecast_df)
-        except Exception as e:
-            st.error(f"Model error: {e}")
-    else:
-        st.warning("Not enough monthly data to forecast (minimum 12 months required).")
+    # Forecast using trend only
+    model = ExponentialSmoothing(train["Total Amount"], trend="add", seasonal=None)
+    fit = model.fit()
+    prediction = fit.forecast(3)
+
+    # Accuracy metrics
+    mape = mean_absolute_percentage_error(test["Total Amount"], prediction) * 100
+    rmse = np.sqrt(mean_squared_error(test["Total Amount"], prediction))
+
+    st.subheader("📈 Step 2: Sales Forecast (Next 6 Months)")
+    forecast_6mo = fit.forecast(6)
+    st.line_chart(forecast_6mo)
+
+    st.markdown("### 📊 Forecast Accuracy on Test Data (Last 3 Months)")
+    st.write(f"**MAPE:** {mape:.2f}%")
+    st.write(f"**RMSE:** {rmse:.2f}")
+else:
+    st.warning("Not enough data points to evaluate forecast accuracy. Please upload at least 15+ months of data.")
