@@ -41,7 +41,7 @@ if uploaded_file:
     st.subheader("🔮 Sales Forecast (Next 6 Months)")
     if len(cat_df) >= 12:
         try:
-            model = ExponentialSmoothing(cat_df["Total Amount"], trend="add", seasonal="add", seasonal_periods=12)
+            model = ExponentialSmoothing(cat_df["Total Amount"], trend="add", seasonal="add", seasonal_periods=6)
             fit = model.fit()
             forecast = fit.forecast(6)
 
