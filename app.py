@@ -9,6 +9,9 @@ from xgboost import XGBRegressor
 from sklearn.metrics import mean_squared_error, mean_absolute_percentage_error
 from sklearn.model_selection import train_test_split
 from prophet import Prophet
+pip install scikit-learn
+pip show scikit-learn
+
 
 # Streamlit configuration
 st.set_page_config(page_title="MSME Forecasting Tool", layout="wide")
