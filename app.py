@@ -10,46 +10,57 @@ from sklearn.metrics import mean_squared_error, mean_absolute_percentage_error
 from sklearn.model_selection import train_test_split
 from prophet import Prophet
 
+# Streamlit configuration
 st.set_page_config(page_title="MSME Forecasting Tool", layout="wide")
 st.title("📈 MSME Supply Chain Forecasting Tool")
 
+# File upload functionality
 uploaded_file = st.file_uploader("Upload Excel or CSV File", type=["xlsx", "csv"])
 
 if uploaded_file:
-    # Read file
+    # Load the dataset based on file type
     if uploaded_file.name.endswith(".csv"):
         df = pd.read_csv(uploaded_file)
     else:
         df = pd.read_excel(uploaded_file)
 
+    # Show the first few rows to preview the data
     st.subheader("Step 1: Column Mapping and Data Preview")
     st.write(df.head())
 
+    # Let the user select the Date and Sales/Order columns
     date_col = st.selectbox("Select the Date Column", df.columns)
     sales_col = st.selectbox("Select the Sales/Order Column", df.columns)
 
+    # Convert the selected date column to datetime format and sort the data by date
     df[date_col] = pd.to_datetime(df[date_col])
     df = df.sort_values(date_col)
     df.set_index(date_col, inplace=True)
+
+    # Resample data to monthly sales
     monthly_data = df.resample('M')[sales_col].sum().fillna(0)
 
+    # Let the user choose a model for forecasting
     st.subheader("Step 2: Select Forecasting Model")
     model_choice = st.selectbox("Choose Forecasting Model", 
                                 ["ARIMA", "Holt-Winters", "Prophet", "Random Forest", "XGBoost"])
 
+    # Let the user select the forecast horizon (next 3 to 12 months)
     forecast_period = st.slider("Select Forecast Horizon (Months)", 3, 12, 6)
 
-    # Split data
+    # Split the data into train and test (last 3 months for evaluation)
     train = monthly_data[:-3]
     test = monthly_data[-3:]
 
     forecast = None
 
+    # ARIMA model
     if model_choice == "ARIMA":
         model = ARIMA(train, order=(1, 1, 1))
         fit = model.fit()
         forecast = fit.forecast(steps=forecast_period)
 
+    # Holt-Winters model
     elif model_choice == "Holt-Winters":
         try:
             model = ExponentialSmoothing(train, trend="add", seasonal="add", seasonal_periods=12)
@@ -58,6 +69,7 @@ if uploaded_file:
         except:
             st.error("Holt-Winters needs at least 2 seasonal cycles. Use ARIMA or ML models instead.")
 
+    # Prophet model
     elif model_choice == "Prophet":
         prophet_df = monthly_data.reset_index()
         prophet_df.columns = ['ds', 'y']
@@ -67,6 +79,7 @@ if uploaded_file:
         forecast_prophet = model.predict(future)
         forecast = forecast_prophet.set_index('ds')['yhat'].tail(forecast_period)
 
+    # Machine Learning models (Random Forest, XGBoost)
     elif model_choice in ["Random Forest", "XGBoost"]:
         df_ml = monthly_data.reset_index()
         df_ml['month'] = df_ml[date_col].dt.month
@@ -93,11 +106,12 @@ if uploaded_file:
 
         forecast = pd.Series(model.predict(future_df), index=future_months)
 
+    # Display the forecast
     if forecast is not None:
         st.subheader("Step 3: Forecast Result")
         st.line_chart(pd.concat([monthly_data, forecast]))
 
-        # Accuracy if possible
+        # Compute and display forecast accuracy (MAPE and RMSE) on the last 3 months
         if len(test) >= 3 and forecast_period >= 3:
             aligned = forecast[:3]
             aligned.index = test.index
