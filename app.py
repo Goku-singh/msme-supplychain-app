@@ -1,67 +1,75 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
 from statsmodels.tsa.holtwinters import ExponentialSmoothing
 
-st.set_page_config(page_title="MSME Forecasting App", layout="wide")
-st.title("📦 MSME Sales Forecasting Tool")
+# Set page title
+st.set_page_config(page_title="MSME Supply Chain App", layout="wide")
+st.title("📊 MSME Supply Chain Helper")
 
-# Step 1: Upload
-uploaded_file = st.file_uploader("📁 Upload your Excel or CSV file", type=["xlsx", "csv"])
+# Upload file
+uploaded_file = st.file_uploader("Upload your Excel or CSV file", type=["xlsx", "csv"])
+
+# Custom MAPE and RMSE functions (no sklearn required)
+def mean_absolute_percentage_error(y_true, y_pred):
+    y_true, y_pred = np.array(y_true), np.array(y_pred)
+    return np.mean(np.abs((y_true - y_pred) / y_true)) * 100
+
+def root_mean_squared_error(y_true, y_pred):
+    return np.sqrt(np.mean((np.array(y_true) - np.array(y_pred))**2))
 
 if uploaded_file:
-    # Step 2: Read file
     if uploaded_file.name.endswith(".csv"):
         df = pd.read_csv(uploaded_file)
     else:
         df = pd.read_excel(uploaded_file)
 
-    # Step 3: Data cleaning
-    df["Date"] = pd.to_datetime(df["Date"], dayfirst=True, errors='coerce')
-    df = df.dropna(subset=["Date"])  # Drop rows with invalid dates
-    df["Total Amount"] = df["Quantity"] * df["Price per Unit"]
-    
-    st.subheader("📋 Data Preview")
+    st.subheader("Step 1: Map Your Data Columns")
+    st.write("Preview of your data:")
     st.dataframe(df.head())
 
-    # Step 4: Monthly aggregation
-    df["Month"] = df["Date"].dt.to_period("M")
-    monthly_sales = df.groupby(["Month", "Product Category"])["Total Amount"].sum().reset_index()
-    monthly_sales["Month"] = monthly_sales["Month"].dt.to_timestamp()
+    date_col = st.selectbox("Select the Date column", df.columns)
+    category_col = st.selectbox("Select the Product Category column", df.columns)
+    sales_col = st.selectbox("Select the Sales Amount column (e.g., Total Amount)", df.columns)
 
-    # Step 5: Category selection
-    categories = monthly_sales["Product Category"].unique()
-    selected_cat = st.selectbox("🛍️ Select a Product Category to Forecast", categories)
+    df[date_col] = pd.to_datetime(df[date_col])
+    df = df.sort_values(date_col)
 
-    cat_df = monthly_sales[monthly_sales["Product Category"] == selected_cat].set_index("Month")
+    # User selects product category to forecast
+    unique_categories = df[category_col].unique()
+    selected_category = st.selectbox("Choose a Product Category for Forecasting", unique_categories)
 
-    st.subheader(f"📈 Historical Sales Trend for '{selected_cat}'")
-    st.line_chart(cat_df["Total Amount"])
+    # Filter data for selected category
+    cat_df = df[df[category_col] == selected_category]
+    cat_df = cat_df.groupby(date_col)[sales_col].sum().reset_index()
+    cat_df.set_index(date_col, inplace=True)
 
-    # Step 6: Holt-Winters Forecasting (12-month seasonal)
-    from sklearn.metrics import mean_absolute_percentage_error, mean_squared_error
-import numpy as np
+    st.subheader("Step 2: Visualize Historical Sales")
+    st.line_chart(cat_df)
 
-# Ensure there are enough data points
-if len(cat_df) > 12:
-    # Split into train/test (last 3 months as test)
-    train = cat_df.iloc[:-3]
-    test = cat_df.iloc[-3:]
+    # Forecasting block
+    if len(cat_df) > 15:
+        try:
+            train = cat_df.iloc[:-3]
+            test = cat_df.iloc[-3:]
 
-    # Forecast using trend only
-    model = ExponentialSmoothing(train["Total Amount"], trend="add", seasonal=None)
-    fit = model.fit()
-    prediction = fit.forecast(3)
+            model = ExponentialSmoothing(train[sales_col], trend="add", seasonal=None)
+            fit = model.fit()
+            prediction = fit.forecast(3)
 
-    # Accuracy metrics
-    mape = mean_absolute_percentage_error(test["Total Amount"], prediction) * 100
-    rmse = np.sqrt(mean_squared_error(test["Total Amount"], prediction))
+            mape = mean_absolute_percentage_error(test[sales_col], prediction)
+            rmse = root_mean_squared_error(test[sales_col], prediction)
 
-    st.subheader("📈 Step 2: Sales Forecast (Next 6 Months)")
-    forecast_6mo = fit.forecast(6)
-    st.line_chart(forecast_6mo)
+            st.subheader("📈 Step 3: Sales Forecast (Next 6 Months)")
+            forecast_6mo = fit.forecast(6)
+            st.line_chart(forecast_6mo)
 
-    st.markdown("### 📊 Forecast Accuracy on Test Data (Last 3 Months)")
-    st.write(f"**MAPE:** {mape:.2f}%")
-    st.write(f"**RMSE:** {rmse:.2f}")
-else:
-    st.warning("Not enough data points to evaluate forecast accuracy. Please upload at least 15+ months of data.")
+            st.markdown("### 📊 Forecast Accuracy (Test Data: Last 3 Months)")
+            st.write(f"**MAPE:** {mape:.2f}%")
+            st.write(f"**RMSE:** {rmse:.2f}")
+
+        except Exception as e:
+            st.error(f"Model error: {e}")
+    else:
+        st.warning("Not enough data points to perform reliable forecasting. Please upload at least 15+ months of data.")
