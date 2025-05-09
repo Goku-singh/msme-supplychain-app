@@ -3,66 +3,46 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from statsmodels.tsa.holtwinters import ExponentialSmoothing
 
-# Set up page title and layout
-st.set_page_config(page_title="MSME Supply Chain App", layout="wide")
-st.title("📊 MSME Supply Chain Helper")
+st.set_page_config(page_title="MSME Forecasting App", layout="wide")
+st.title("📦 MSME Sales Forecasting Tool")
 
-# Allow user to upload multiple Excel/CSV files
-uploaded_files = st.file_uploader("Upload your Excel or CSV files", type=["xlsx", "csv"], accept_multiple_files=True)
+# Step 1: Upload
+uploaded_file = st.file_uploader("📁 Upload Excel or CSV file", type=["xlsx", "csv"])
 
-if uploaded_files:
-    # Initialize an empty DataFrame to store merged data
-    df_all = pd.DataFrame()
+if uploaded_file:
+    # Step 2: Read file
+    if uploaded_file.name.endswith(".csv"):
+        df = pd.read_csv(uploaded_file)
+    else:
+        df = pd.read_excel(uploaded_file)
 
-    # Process each uploaded file
-    for uploaded_file in uploaded_files:
-        if uploaded_file.name.endswith(".csv"):
-            df = pd.read_csv(uploaded_file)
-        else:
-            df = pd.read_excel(uploaded_file)
-        
-        # Optionally, merge or concatenate the data from multiple files here if needed
-        df_all = pd.concat([df_all, df], ignore_index=True)
+    # Step 3: Basic cleaning
+    df["Date"] = pd.to_datetime(df["Date"], dayfirst=True)
+    df["Total Amount"] = df["Quantity"] * df["Price per Unit"]
     
-    # Display the first few rows of the combined data
-    st.subheader("Step 1: Map your data columns")
-    st.write("Preview:", df_all.head())
+    st.subheader("📋 Data Preview")
+    st.write(df.head())
 
-    # Allow users to select columns from the dataset
-    date_col = st.selectbox("Select the column for Date", df_all.columns)
-    sales_col = st.selectbox("Select the column for Sales/Orders", df_all.columns)
-    inv_col = st.selectbox("Select the column for Inventory", df_all.columns)
+    # Step 4: Group by Category + Month
+    df["Month"] = df["Date"].dt.to_period("M")
+    monthly_sales = df.groupby(["Month", "Product Category"])["Total Amount"].sum().reset_index()
+    monthly_sales["Month"] = monthly_sales["Month"].dt.to_timestamp()
 
-    # Convert the date column to datetime
-    df_all[date_col] = pd.to_datetime(df_all[date_col])
-    df_all = df_all.sort_values(date_col)
-    df_all.set_index(date_col, inplace=True)
+    # Step 5: User selects category
+    categories = monthly_sales["Product Category"].unique()
+    selected_cat = st.selectbox("🛍️ Select a Product Category to Forecast", categories)
 
-    # Check for missing data and handle it
-    if df_all[sales_col].isnull().any():
-        st.warning(f"Missing values found in the '{sales_col}' column. Consider filling or dropping them.")
+    cat_df = monthly_sales[monthly_sales["Product Category"] == selected_cat].set_index("Month")
 
-    if df_all[inv_col].isnull().any():
-        st.warning(f"Missing values found in the '{inv_col}' column. Consider filling or dropping them.")
-    
-    # Step 2: Sales Forecast (Next N months)
-    st.subheader("Step 2: Sales Forecast (Predict Next Months)")
-    forecast_periods = st.number_input("How many periods do you want to forecast?", min_value=1, max_value=12, value=6)
+    st.subheader(f"📈 Historical Sales for '{selected_cat}'")
+    st.line_chart(cat_df["Total Amount"])
 
-    model = ExponentialSmoothing(df_all[sales_col], trend="add", seasonal="add", seasonal_periods=12)
-    fit = model.fit()
-    forecast = fit.forecast(forecast_periods)
-
-    # Display forecast plot
-    st.line_chart(forecast)
-
-    # Step 3: Inventory Trend
-    st.subheader("Step 3: Inventory Trend")
-    st.line_chart(df_all[inv_col])
-
-    # Optionally, display the raw data used for the forecast and trend
-    if st.checkbox("Show Raw Data"):
-        st.write(df_all)
-else:
-    st.write("Please upload one or more Excel or CSV files to proceed.")
-
+    # Step 6: Holt-Winters Forecast
+    st.subheader("🔮 Sales Forecast (Next 6 Months)")
+    if len(cat_df) >= 12:
+        model = ExponentialSmoothing(cat_df["Total Amount"], trend="add", seasonal="add", seasonal_periods=12)
+        fit = model.fit()
+        forecast = fit.forecast(6)
+        st.line_chart(forecast)
+    else:
+        st.warning("Not enough data to forecast (min 12 months required).")
