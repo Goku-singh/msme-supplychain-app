@@ -1,126 +1,122 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
 import matplotlib.pyplot as plt
-from statsmodels.tsa.arima.model import ARIMA
-from statsmodels.tsa.holtwinters import ExponentialSmoothing
+import numpy as np
+import warnings
+warnings.filterwarnings("ignore")
+
+from sklearn.metrics import mean_squared_error, mean_absolute_percentage_error
 from sklearn.ensemble import RandomForestRegressor
 from xgboost import XGBRegressor
-from sklearn.metrics import mean_squared_error, mean_absolute_percentage_error
-from sklearn.model_selection import train_test_split
+from statsmodels.tsa.holtwinters import ExponentialSmoothing
+from statsmodels.tsa.arima.model import ARIMA
 from prophet import Prophet
-pip install scikit-learn
-pip show scikit-learn
 
+st.set_page_config(page_title="📈 MSME Forecast App", layout="wide")
+st.title("📦 MSME Supply Chain Forecasting Dashboard")
 
-# Streamlit configuration
-st.set_page_config(page_title="MSME Forecasting Tool", layout="wide")
-st.title("📈 MSME Supply Chain Forecasting Tool")
-
-# File upload functionality
-uploaded_file = st.file_uploader("Upload Excel or CSV File", type=["xlsx", "csv"])
+uploaded_file = st.file_uploader("Upload your retail sales dataset (CSV)", type=["csv"])
 
 if uploaded_file:
-    # Load the dataset based on file type
-    if uploaded_file.name.endswith(".csv"):
-        df = pd.read_csv(uploaded_file)
-    else:
-        df = pd.read_excel(uploaded_file)
-
-    # Show the first few rows to preview the data
-    st.subheader("Step 1: Column Mapping and Data Preview")
+    df = pd.read_csv(uploaded_file)
+    st.success("✅ Data uploaded successfully!")
+    
+    st.subheader("Step 1: Column Mapping")
     st.write(df.head())
-
-    # Let the user select the Date and Sales/Order columns
-    date_col = st.selectbox("Select the Date Column", df.columns)
-    sales_col = st.selectbox("Select the Sales/Order Column", df.columns)
-
-    # Convert the selected date column to datetime format and sort the data by date
+    
+    date_col = st.selectbox("Select Date Column", df.columns)
+    sales_col = st.selectbox("Select Sales/Revenue Column", df.columns)
+    
     df[date_col] = pd.to_datetime(df[date_col])
-    df = df.sort_values(date_col)
-    df.set_index(date_col, inplace=True)
+    df = df.sort_values(by=date_col)
+    df = df[[date_col, sales_col]].rename(columns={date_col: "ds", sales_col: "y"})
 
-    # Resample data to monthly sales
-    monthly_data = df.resample('M')[sales_col].sum().fillna(0)
+    # Split into train and test (last 3 months for test)
+    forecast_horizon = 3
+    train_df = df[:-forecast_horizon]
+    test_df = df[-forecast_horizon:]
 
-    # Let the user choose a model for forecasting
-    st.subheader("Step 2: Select Forecasting Model")
-    model_choice = st.selectbox("Choose Forecasting Model", 
-                                ["ARIMA", "Holt-Winters", "Prophet", "Random Forest", "XGBoost"])
+    st.subheader("Step 2: Choose Forecasting Model")
+    model_choice = st.selectbox("Select a model", ["Holt-Winters", "ARIMA", "Prophet", "Random Forest", "XGBoost"])
 
-    # Let the user select the forecast horizon (next 3 to 12 months)
-    forecast_period = st.slider("Select Forecast Horizon (Months)", 3, 12, 6)
+    st.subheader("Step 3: Forecast & Evaluation")
+    forecast_period = st.slider("Forecast how many months?", 3, 12, 6)
 
-    # Split the data into train and test (last 3 months for evaluation)
-    train = monthly_data[:-3]
-    test = monthly_data[-3:]
+    future_dates = pd.date_range(df["ds"].max(), periods=forecast_period + 1, freq='MS')[1:]
 
-    forecast = None
+    if model_choice == "Holt-Winters":
+        model = ExponentialSmoothing(train_df['y'], trend='add', seasonal='add', seasonal_periods=12).fit()
+        forecast = model.forecast(forecast_period)
+        predictions = model.forecast(len(test_df))
+        
+    elif model_choice == "ARIMA":
+        model = ARIMA(train_df['y'], order=(1,1,1)).fit()
+        forecast = model.forecast(steps=forecast_period)
+        predictions = model.forecast(steps=len(test_df))
 
-    # ARIMA model
-    if model_choice == "ARIMA":
-        model = ARIMA(train, order=(1, 1, 1))
-        fit = model.fit()
-        forecast = fit.forecast(steps=forecast_period)
-
-    # Holt-Winters model
-    elif model_choice == "Holt-Winters":
-        try:
-            model = ExponentialSmoothing(train, trend="add", seasonal="add", seasonal_periods=12)
-            fit = model.fit()
-            forecast = fit.forecast(forecast_period)
-        except:
-            st.error("Holt-Winters needs at least 2 seasonal cycles. Use ARIMA or ML models instead.")
-
-    # Prophet model
     elif model_choice == "Prophet":
-        prophet_df = monthly_data.reset_index()
-        prophet_df.columns = ['ds', 'y']
-        model = Prophet()
-        model.fit(prophet_df)
-        future = model.make_future_dataframe(periods=forecast_period, freq='M')
-        forecast_prophet = model.predict(future)
-        forecast = forecast_prophet.set_index('ds')['yhat'].tail(forecast_period)
+        prophet_model = Prophet()
+        prophet_model.fit(train_df)
+        future = prophet_model.make_future_dataframe(periods=forecast_period, freq='MS')
+        forecast_df = prophet_model.predict(future)
+        forecast = forecast_df[['ds', 'yhat']].tail(forecast_period).set_index('ds')['yhat']
+        predictions = prophet_model.predict(df[['ds']].tail(forecast_horizon))[["yhat"]].values.flatten()
 
-    # Machine Learning models (Random Forest, XGBoost)
-    elif model_choice in ["Random Forest", "XGBoost"]:
-        df_ml = monthly_data.reset_index()
-        df_ml['month'] = df_ml[date_col].dt.month
-        df_ml['year'] = df_ml[date_col].dt.year
-        df_ml['lag1'] = df_ml[sales_col].shift(1)
-        df_ml.dropna(inplace=True)
+    elif model_choice == "Random Forest":
+        df['month'] = df['ds'].dt.month
+        df['year'] = df['ds'].dt.year
+        features = ['month', 'year']
+        
+        X_train = train_df.copy()
+        X_train['month'] = X_train['ds'].dt.month
+        X_train['year'] = X_train['ds'].dt.year
+        y_train = X_train['y']
+        X_train = X_train[features]
 
-        X = df_ml[['month', 'year', 'lag1']]
-        y = df_ml[sales_col]
+        rf = RandomForestRegressor()
+        rf.fit(X_train, y_train)
 
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
+        future_df = pd.DataFrame({'ds': future_dates})
+        future_df['month'] = future_df['ds'].dt.month
+        future_df['year'] = future_df['ds'].dt.year
+        forecast = rf.predict(future_df[features])
 
-        if model_choice == "Random Forest":
-            model = RandomForestRegressor()
-        else:
-            model = XGBRegressor(objective='reg:squarederror')
+        test_feat = test_df.copy()
+        test_feat['month'] = test_feat['ds'].dt.month
+        test_feat['year'] = test_feat['ds'].dt.year
+        predictions = rf.predict(test_feat[features])
 
+    elif model_choice == "XGBoost":
+        df['month'] = df['ds'].dt.month
+        df['year'] = df['ds'].dt.year
+        features = ['month', 'year']
+
+        X_train = train_df.copy()
+        X_train['month'] = X_train['ds'].dt.month
+        X_train['year'] = X_train['ds'].dt.year
+        y_train = X_train['y']
+        X_train = X_train[features]
+
+        model = XGBRegressor()
         model.fit(X_train, y_train)
-        future_months = pd.date_range(start=monthly_data.index[-1], periods=forecast_period+1, freq='M')[1:]
-        future_df = pd.DataFrame()
-        future_df['month'] = future_months.month
-        future_df['year'] = future_months.year
-        future_df['lag1'] = [monthly_data[-1]] * forecast_period
 
-        forecast = pd.Series(model.predict(future_df), index=future_months)
+        future_df = pd.DataFrame({'ds': future_dates})
+        future_df['month'] = future_df['ds'].dt.month
+        future_df['year'] = future_df['ds'].dt.year
+        forecast = model.predict(future_df[features])
 
-    # Display the forecast
-    if forecast is not None:
-        st.subheader("Step 3: Forecast Result")
-        st.line_chart(pd.concat([monthly_data, forecast]))
+        test_feat = test_df.copy()
+        test_feat['month'] = test_feat['ds'].dt.month
+        test_feat['year'] = test_feat['ds'].dt.year
+        predictions = model.predict(test_feat[features])
 
-        # Compute and display forecast accuracy (MAPE and RMSE) on the last 3 months
-        if len(test) >= 3 and forecast_period >= 3:
-            aligned = forecast[:3]
-            aligned.index = test.index
-            rmse = mean_squared_error(test, aligned, squared=False)
-            mape = mean_absolute_percentage_error(test, aligned) * 100
+    st.write("### 📉 Forecast Results")
+    result_df = pd.DataFrame({'Date': future_dates, 'Forecast': forecast})
+    st.line_chart(result_df.set_index('Date'))
 
-            st.subheader("📌 Forecast Accuracy (Test Data: Last 3 Months)")
-            st.markdown(f"**MAPE:** {mape:.2f}%")
-            st.markdown(f"**RMSE:** {rmse:.2f}")
+    st.write("### 📊 Forecast Accuracy (on last 3 months)")
+    rmse = np.sqrt(mean_squared_error(test_df['y'], predictions))
+    mape = mean_absolute_percentage_error(test_df['y'], predictions)
+
+    st.metric("MAPE (%)", f"{mape*100:.2f}")
+    st.metric("RMSE", f"{rmse:.2f}")
