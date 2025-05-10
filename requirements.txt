@@ -4,3 +4,4 @@ openpyxl
 matplotlib
 statsmodels
 scikit-learn
+xgboost
