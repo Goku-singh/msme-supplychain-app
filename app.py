@@ -1,122 +1,128 @@
 import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
+import seaborn as sns
 import numpy as np
-import warnings
-warnings.filterwarnings("ignore")
-
 from sklearn.metrics import mean_squared_error, mean_absolute_percentage_error
 from sklearn.ensemble import RandomForestRegressor
 from xgboost import XGBRegressor
+from prophet import Prophet
 from statsmodels.tsa.holtwinters import ExponentialSmoothing
 from statsmodels.tsa.arima.model import ARIMA
-from prophet import Prophet
+from datetime import timedelta
 
-st.set_page_config(page_title="📈 MSME Forecast App", layout="wide")
-st.title("📦 MSME Supply Chain Forecasting Dashboard")
+st.set_page_config(page_title="📊 MSME Forecast Dashboard", layout="wide")
+st.title("MSME Forecasting and Analysis Dashboard")
 
-uploaded_file = st.file_uploader("Upload your retail sales dataset (CSV)", type=["csv"])
+# Upload section
+uploaded_file = st.file_uploader("Upload your retail sales CSV", type="csv")
+if not uploaded_file:
+    st.warning("Please upload a CSV file to continue.")
+    st.stop()
 
-if uploaded_file:
-    df = pd.read_csv(uploaded_file)
-    st.success("✅ Data uploaded successfully!")
-    
-    st.subheader("Step 1: Column Mapping")
-    st.write(df.head())
-    
-    date_col = st.selectbox("Select Date Column", df.columns)
-    sales_col = st.selectbox("Select Sales/Revenue Column", df.columns)
-    
-    df[date_col] = pd.to_datetime(df[date_col])
-    df = df.sort_values(by=date_col)
-    df = df[[date_col, sales_col]].rename(columns={date_col: "ds", sales_col: "y"})
+# Load data
+df = pd.read_csv(uploaded_file)
+df['Date'] = pd.to_datetime(df['Date'])
+df.sort_values('Date', inplace=True)
 
-    # Split into train and test (last 3 months for test)
-    forecast_horizon = 3
-    train_df = df[:-forecast_horizon]
-    test_df = df[-forecast_horizon:]
+# User selection: Product category
+product_category = st.selectbox("Select Product Category to Analyze:", df['Product Category'].unique())
+filtered_df = df[df['Product Category'] == product_category].copy()
 
-    st.subheader("Step 2: Choose Forecasting Model")
-    model_choice = st.selectbox("Select a model", ["Holt-Winters", "ARIMA", "Prophet", "Random Forest", "XGBoost"])
+# Aggregate sales monthly
+df_monthly = filtered_df.resample('M', on='Date').sum(numeric_only=True)
+df_monthly = df_monthly[['Total Amount']]
+df_monthly.columns = ['Sales']
 
-    st.subheader("Step 3: Forecast & Evaluation")
-    forecast_period = st.slider("Forecast how many months?", 3, 12, 6)
+# Show raw chart
+st.subheader(f"📈 Monthly Sales Trend: {product_category}")
+st.line_chart(df_monthly)
 
-    future_dates = pd.date_range(df["ds"].max(), periods=forecast_period + 1, freq='MS')[1:]
+# Train-test split (last 3 months for testing)
+train = df_monthly[:-3]
+test = df_monthly[-3:]
 
-    if model_choice == "Holt-Winters":
-        model = ExponentialSmoothing(train_df['y'], trend='add', seasonal='add', seasonal_periods=12).fit()
-        forecast = model.forecast(forecast_period)
-        predictions = model.forecast(len(test_df))
-        
-    elif model_choice == "ARIMA":
-        model = ARIMA(train_df['y'], order=(1,1,1)).fit()
-        forecast = model.forecast(steps=forecast_period)
-        predictions = model.forecast(steps=len(test_df))
+# Forecast model selection
+model_option = st.selectbox("Select Forecasting Model:", ["Holt-Winters", "ARIMA", "Prophet", "Random Forest", "XGBoost"])
+forecast_months = st.slider("Select months to forecast:", 3, 12, 6)
 
-    elif model_choice == "Prophet":
-        prophet_model = Prophet()
-        prophet_model.fit(train_df)
-        future = prophet_model.make_future_dataframe(periods=forecast_period, freq='MS')
-        forecast_df = prophet_model.predict(future)
-        forecast = forecast_df[['ds', 'yhat']].tail(forecast_period).set_index('ds')['yhat']
-        predictions = prophet_model.predict(df[['ds']].tail(forecast_horizon))[["yhat"]].values.flatten()
+# Forecasting logic
+def forecast_with_model(model_name):
+    if model_name == "Holt-Winters":
+        model = ExponentialSmoothing(train['Sales'], trend='add', seasonal='add', seasonal_periods=12)
+        fit = model.fit()
+        forecast = fit.forecast(forecast_months)
+        return forecast
 
-    elif model_choice == "Random Forest":
-        df['month'] = df['ds'].dt.month
-        df['year'] = df['ds'].dt.year
-        features = ['month', 'year']
-        
-        X_train = train_df.copy()
-        X_train['month'] = X_train['ds'].dt.month
-        X_train['year'] = X_train['ds'].dt.year
-        y_train = X_train['y']
-        X_train = X_train[features]
+    elif model_name == "ARIMA":
+        model = ARIMA(train['Sales'], order=(1,1,1))
+        fit = model.fit()
+        forecast = fit.forecast(steps=forecast_months)
+        return forecast
 
-        rf = RandomForestRegressor()
-        rf.fit(X_train, y_train)
+    elif model_name == "Prophet":
+        prophet_df = train.reset_index().rename(columns={"Date": "ds", "Sales": "y"})
+        model = Prophet()
+        model.fit(prophet_df)
+        future = model.make_future_dataframe(periods=forecast_months, freq='M')
+        forecast = model.predict(future)
+        return forecast.set_index('ds')['yhat'].tail(forecast_months)
 
-        future_df = pd.DataFrame({'ds': future_dates})
-        future_df['month'] = future_df['ds'].dt.month
-        future_df['year'] = future_df['ds'].dt.year
-        forecast = rf.predict(future_df[features])
+    elif model_name == "Random Forest":
+        df_rf = train.copy()
+        df_rf['month'] = np.arange(len(df_rf))
+        X = df_rf[['month']]
+        y = df_rf['Sales']
+        model = RandomForestRegressor().fit(X, y)
+        future = pd.DataFrame({'month': np.arange(len(df_rf), len(df_rf)+forecast_months)})
+        forecast = model.predict(future)
+        return pd.Series(forecast, index=pd.date_range(df_rf.index[-1]+timedelta(days=30), periods=forecast_months, freq='M'))
 
-        test_feat = test_df.copy()
-        test_feat['month'] = test_feat['ds'].dt.month
-        test_feat['year'] = test_feat['ds'].dt.year
-        predictions = rf.predict(test_feat[features])
+    elif model_name == "XGBoost":
+        df_xgb = train.copy()
+        df_xgb['month'] = np.arange(len(df_xgb))
+        X = df_xgb[['month']]
+        y = df_xgb['Sales']
+        model = XGBRegressor(objective='reg:squarederror').fit(X, y)
+        future = pd.DataFrame({'month': np.arange(len(df_xgb), len(df_xgb)+forecast_months)})
+        forecast = model.predict(future)
+        return pd.Series(forecast, index=pd.date_range(df_xgb.index[-1]+timedelta(days=30), periods=forecast_months, freq='M'))
 
-    elif model_choice == "XGBoost":
-        df['month'] = df['ds'].dt.month
-        df['year'] = df['ds'].dt.year
-        features = ['month', 'year']
+forecast = forecast_with_model(model_option)
 
-        X_train = train_df.copy()
-        X_train['month'] = X_train['ds'].dt.month
-        X_train['year'] = X_train['ds'].dt.year
-        y_train = X_train['y']
-        X_train = X_train[features]
+# Accuracy calculation (only for 3-month test data if applicable)
+if len(test) >= 3:
+    try:
+        eval_forecast = forecast[:3]
+        mape = mean_absolute_percentage_error(test['Sales'], eval_forecast) * 100
+        rmse = np.sqrt(mean_squared_error(test['Sales'], eval_forecast))
+        st.subheader("📌 Forecast Accuracy (on last 3 months of test data)")
+        st.markdown(f"**MAPE:** {mape:.2f}%  ")
+        st.markdown(f"**RMSE:** {rmse:.2f}")
+    except:
+        st.warning("Forecast accuracy could not be calculated for the selected model.")
 
-        model = XGBRegressor()
-        model.fit(X_train, y_train)
+# Forecast Chart
+st.subheader(f"🔮 Sales Forecast for Next {forecast_months} Months")
+fig, ax = plt.subplots(figsize=(10, 5))
+train['Sales'].plot(ax=ax, label='Train')
+test['Sales'].plot(ax=ax, label='Test', color='orange')
+forecast.plot(ax=ax, label='Forecast', color='green')
+plt.legend()
+plt.title(f"{model_option} Forecast for {product_category}")
+st.pyplot(fig)
 
-        future_df = pd.DataFrame({'ds': future_dates})
-        future_df['month'] = future_df['ds'].dt.month
-        future_df['year'] = future_df['ds'].dt.year
-        forecast = model.predict(future_df[features])
+# Extra charts
+st.subheader("📊 Additional Insights")
+col1, col2 = st.columns(2)
 
-        test_feat = test_df.copy()
-        test_feat['month'] = test_feat['ds'].dt.month
-        test_feat['year'] = test_feat['ds'].dt.year
-        predictions = model.predict(test_feat[features])
+with col1:
+    gender_plot = filtered_df.groupby('Gender')['Total Amount'].sum().plot.pie(autopct='%1.0f%%', title='Sales by Gender')
+    st.pyplot(gender_plot.get_figure())
 
-    st.write("### 📉 Forecast Results")
-    result_df = pd.DataFrame({'Date': future_dates, 'Forecast': forecast})
-    st.line_chart(result_df.set_index('Date'))
+with col2:
+    age_plot = sns.boxplot(data=filtered_df, x='Gender', y='Age')
+    plt.title("Age Distribution by Gender")
+    st.pyplot(age_plot.figure)
 
-    st.write("### 📊 Forecast Accuracy (on last 3 months)")
-    rmse = np.sqrt(mean_squared_error(test_df['y'], predictions))
-    mape = mean_absolute_percentage_error(test_df['y'], predictions)
-
-    st.metric("MAPE (%)", f"{mape*100:.2f}")
-    st.metric("RMSE", f"{rmse:.2f}")
+st.success("Dashboard generated successfully!")
