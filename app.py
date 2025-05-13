@@ -1,147 +1,100 @@
-import streamlit as st
 import pandas as pd
-import numpy as np
+import streamlit as st
+import plotly.express as px
 import seaborn as sns
 import matplotlib.pyplot as plt
-import plotly.express as px
-import plotly.graph_objects as go
-from sklearn.metrics import mean_squared_error, mean_absolute_error
-from prophet import Prophet
-from statsmodels.tsa.holtwinters import ExponentialSmoothing
-from statsmodels.tsa.arima.model import ARIMA
-from sklearn.ensemble import RandomForestRegressor
-from xgboost import XGBRegressor
+from sklearn.metrics import mean_absolute_percentage_error, mean_squared_error
 import datetime
-import warnings
-warnings.filterwarnings("ignore")
 
-# --- Sidebar ---
-st.sidebar.title("Sales Forecasting Dashboard")
-st.sidebar.markdown("Upload your 2-year sales dataset")
+# Page config
+st.set_page_config(page_title="Retail Sales Dashboard", layout="wide")
 
-# File upload
-file = st.sidebar.file_uploader("Upload CSV", type=["csv"])
+# Title
+st.title("📊 Retail Sales & Forecasting Dashboard")
 
-if file is not None:
-    df = pd.read_csv(file)
-    df['Date'] = pd.to_datetime(df['Date'])
-    df.sort_values('Date', inplace=True)
+# Upload data
+uploaded_file = st.sidebar.file_uploader("Upload your retail sales CSV", type=["csv"])
+if uploaded_file:
+    df = pd.read_csv(uploaded_file, parse_dates=['Date'])
 
-    st.title("📊 Sales Dashboard with Forecasting & ABC Analysis")
+    # Sidebar filters
+    st.sidebar.header("Filters")
+    start_date = st.sidebar.date_input("Start Date", df['Date'].min().date())
+    end_date = st.sidebar.date_input("End Date", df['Date'].max().date())
+
+    # Filter by product category
+    categories = st.sidebar.multiselect("Product Categories", df['Product Category'].unique(), default=df['Product Category'].unique())
+
+    # Apply filters
+    df_filtered = df[(df['Date'] >= pd.to_datetime(start_date)) &
+                     (df['Date'] <= pd.to_datetime(end_date)) &
+                     (df['Product Category'].isin(categories))]
+
+    # Preprocessing
+    df_filtered['Total Amount'] = df_filtered['Quantity'] * df_filtered['Price per Unit']
+
+    # KPI Cards
+    total_revenue = df_filtered['Total Amount'].sum()
+    total_orders = df_filtered.shape[0]
+    total_customers = df_filtered['Customer ID'].nunique()
+    aov = total_revenue / total_orders if total_orders != 0 else 0
+
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Total Revenue", f"₹{total_revenue:,.2f}")
+    col2.metric("Total Orders", f"{total_orders}")
+    col3.metric("Unique Customers", f"{total_customers}")
+    col4.metric("Average Order Value", f"₹{aov:,.2f}")
+
     st.markdown("---")
 
-    # Product Category Filter
-    selected_product = st.sidebar.selectbox("Select Product Category", options=df['Product Category'].unique())
-    product_df = df[df['Product Category'] == selected_product]
+    # ABC Analysis: Revenue-Based
+    st.subheader("🔍 ABC Analysis by Revenue")
+    revenue_by_product = df_filtered.groupby('Product Category')['Total Amount'].sum().sort_values(ascending=False).reset_index()
+    revenue_by_product['Cumulative %'] = 100 * revenue_by_product['Total Amount'].cumsum() / revenue_by_product['Total Amount'].sum()
+    revenue_by_product['Class'] = pd.cut(revenue_by_product['Cumulative %'], bins=[0, 70, 90, 100], labels=['A', 'B', 'C'])
+    st.dataframe(revenue_by_product)
 
-    # Monthly Sales Aggregation
-    sales_data = product_df.groupby(pd.Grouper(key='Date', freq='M')).agg({'Total Amount':'sum'}).reset_index()
-    sales_data.columns = ['ds', 'y']
+    fig_revenue = px.bar(revenue_by_product, x='Product Category', y='Total Amount', color='Class', title="Revenue Contribution by Product Category")
+    st.plotly_chart(fig_revenue, use_container_width=True)
 
-    # ABC Analysis
-    st.subheader("🔍 ABC Analysis")
-    abc_df = df.groupby('Product Category').agg({'Total Amount':'sum'}).sort_values(by='Total Amount', ascending=False)
-    abc_df['% Contribution'] = 100 * abc_df['Total Amount'] / abc_df['Total Amount'].sum()
-    abc_df['Cumulative %'] = abc_df['% Contribution'].cumsum()
-    abc_df['ABC Category'] = pd.cut(abc_df['Cumulative %'], bins=[0,70,90,100], labels=['A','B','C'])
-    st.dataframe(abc_df)
+    # ABC Analysis: Quantity Sold
+    st.subheader("🔍 ABC Analysis by Quantity Sold")
+    quantity_by_product = df_filtered.groupby('Product Category')['Quantity'].sum().sort_values(ascending=False).reset_index()
+    quantity_by_product['Cumulative %'] = 100 * quantity_by_product['Quantity'].cumsum() / quantity_by_product['Quantity'].sum()
+    quantity_by_product['Class'] = pd.cut(quantity_by_product['Cumulative %'], bins=[0, 70, 90, 100], labels=['A', 'B', 'C'])
+    st.dataframe(quantity_by_product)
 
-    # Sales Trend Line Chart
-    st.subheader(f"📈 Sales Trend for {selected_product}")
-    fig1 = px.line(sales_data, x='ds', y='y', title='Monthly Sales')
-    st.plotly_chart(fig1)
+    fig_qty = px.bar(quantity_by_product, x='Product Category', y='Quantity', color='Class', title="Quantity Sold by Product Category")
+    st.plotly_chart(fig_qty, use_container_width=True)
 
-    # Sidebar - Model selection
-    model_type = st.sidebar.selectbox("Select Forecasting Model", ["Prophet", "ARIMA", "Holt-Winters", "Random Forest", "XGBoost"])
-    forecast_months = st.sidebar.slider("Forecast Months", 3, 12, 6)
+    # ABC Analysis: Frequency of Sale
+    st.subheader("🔍 ABC Analysis by Frequency of Sale")
+    freq_by_product = df_filtered.groupby('Product Category').size().reset_index(name='Frequency')
+    freq_by_product = freq_by_product.sort_values(by='Frequency', ascending=False)
+    freq_by_product['Cumulative %'] = 100 * freq_by_product['Frequency'].cumsum() / freq_by_product['Frequency'].sum()
+    freq_by_product['Class'] = pd.cut(freq_by_product['Cumulative %'], bins=[0, 70, 90, 100], labels=['A', 'B', 'C'])
+    st.dataframe(freq_by_product)
 
-    # Forecasting Logic
-    if model_type == "Prophet":
-        model = Prophet()
-        model.fit(sales_data)
-        future = model.make_future_dataframe(periods=forecast_months, freq='M')
-        forecast = model.predict(future)
-        fig2 = model.plot(forecast)
-        st.pyplot(fig2)
-        forecast_result = forecast[['ds','yhat']].tail(forecast_months)
+    fig_freq = px.bar(freq_by_product, x='Product Category', y='Frequency', color='Class', title="Frequency of Sales by Product Category")
+    st.plotly_chart(fig_freq, use_container_width=True)
 
-    elif model_type == "ARIMA":
-        model = ARIMA(sales_data['y'], order=(1,1,1))
-        fitted_model = model.fit()
-        forecast = fitted_model.forecast(steps=forecast_months)
-        forecast_result = pd.DataFrame({'ds': pd.date_range(sales_data['ds'].max()+pd.DateOffset(months=1), periods=forecast_months, freq='M'), 'yhat': forecast})
-        st.line_chart(forecast_result.set_index('ds'))
+    st.markdown("---")
 
-    elif model_type == "Holt-Winters":
-        model = ExponentialSmoothing(sales_data['y'], trend='add', seasonal='add', seasonal_periods=12).fit()
-        forecast = model.forecast(forecast_months)
-        forecast_result = pd.DataFrame({'ds': pd.date_range(sales_data['ds'].max()+pd.DateOffset(months=1), periods=forecast_months, freq='M'), 'yhat': forecast})
-        st.line_chart(forecast_result.set_index('ds'))
+    # Time Series Revenue Chart
+    st.subheader("📈 Sales Trend Over Time")
+    df_ts = df_filtered.groupby('Date')['Total Amount'].sum().reset_index()
+    fig_time = px.line(df_ts, x='Date', y='Total Amount', title="Revenue Over Time")
+    st.plotly_chart(fig_time, use_container_width=True)
 
-    elif model_type in ["Random Forest", "XGBoost"]:
-        sales_data['month'] = sales_data['ds'].dt.month
-        sales_data['year'] = sales_data['ds'].dt.year
-        X = sales_data[['month', 'year']]
-        y = sales_data['y']
+    # Optional: Monthly Heatmap
+    st.subheader("📅 Monthly Sales Heatmap")
+    df_filtered['Month'] = df_filtered['Date'].dt.strftime('%Y-%m')
+    heat_data = df_filtered.groupby(['Month', 'Product Category'])['Total Amount'].sum().reset_index()
+    heat_pivot = heat_data.pivot(index='Product Category', columns='Month', values='Total Amount').fillna(0)
 
-        if model_type == "Random Forest":
-            model = RandomForestRegressor()
-        else:
-            model = XGBRegressor(objective='reg:squarederror')
-
-        model.fit(X, y)
-
-        future_dates = pd.date_range(sales_data['ds'].max()+pd.DateOffset(months=1), periods=forecast_months, freq='M')
-        future_df = pd.DataFrame({'ds': future_dates})
-        future_df['month'] = future_df['ds'].dt.month
-        future_df['year'] = future_df['ds'].dt.year
-
-        future_df['yhat'] = model.predict(future_df[['month','year']])
-        st.line_chart(future_df.set_index('ds')['yhat'])
-        forecast_result = future_df[['ds','yhat']]
-
-    # Display Forecast
-    st.subheader("🔮 Forecast Results")
-    st.dataframe(forecast_result)
-
-    # Accuracy Evaluation
-    st.subheader("📏 Forecast Accuracy (Test Data: Last 3 Months)")
-    test_data = sales_data.tail(3)
-    if model_type == "Prophet":
-        test_forecast = forecast[forecast['ds'].isin(test_data['ds'])]
-        y_true = test_data['y'].values
-        y_pred = test_forecast['yhat'].values
-    else:
-        y_true = test_data['y'].values
-        y_pred = forecast_result.head(3)['yhat'].values
-
-    mape = np.mean(np.abs((y_true - y_pred) / y_true)) * 100
-    rmse = np.sqrt(mean_squared_error(y_true, y_pred))
-
-    st.write(f"**MAPE**: {mape:.2f}%")
-    st.write(f"**RMSE**: {rmse:.2f}")
-
-    # Other Visuals
-    st.subheader("📊 Additional Visuals")
-    st.markdown("**Sales by Category**")
-    fig3 = px.bar(df, x='Product Category', y='Total Amount', color='Product Category', title="Sales by Category")
-    st.plotly_chart(fig3)
-
-    st.markdown("**Monthly Sales Heatmap**")
-    df['Month'] = df['Date'].dt.month
-    df['Year'] = df['Date'].dt.year
-    pivot = df.pivot_table(index='Year', columns='Month', values='Total Amount', aggfunc='sum')
-    fig4, ax = plt.subplots()
-    sns.heatmap(pivot, cmap='Blues', annot=True, fmt='.0f', ax=ax)
-    st.pyplot(fig4)
-
-    st.markdown("**Customer Age Distribution**")
-    fig5 = px.histogram(df, x='Age', nbins=20, title="Age Distribution")
-    st.plotly_chart(fig5)
-
-    st.markdown("**Gender Breakdown**")
-    fig6 = px.pie(df, names='Gender', title='Customer Gender Ratio')
-    st.plotly_chart(fig6)
+    fig, ax = plt.subplots(figsize=(12, 6))
+    sns.heatmap(heat_pivot, cmap='YlGnBu', annot=True, fmt='.0f')
+    st.pyplot(fig)
 
 else:
-    st.info("Please upload a CSV file to get started.")
+    st.warning("📂 Please upload a CSV file to begin analysis.")
