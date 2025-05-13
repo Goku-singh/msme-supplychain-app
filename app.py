@@ -8,6 +8,7 @@ from sklearn.metrics import mean_squared_error, mean_absolute_error
 from sklearn.ensemble import RandomForestRegressor
 from xgboost import XGBRegressor
 from prophet import Prophet
+from sklearn.cluster import KMeans
 from datetime import datetime
 
 st.set_page_config(page_title="MSME Supply Chain App", layout="wide")
@@ -43,10 +44,10 @@ if uploaded_file:
 
     st.markdown("---")
 
-    # Sales Trend Chart
+    # Monthly Sales Trend
     monthly_sales = df.groupby("Month")["Total Amount"].sum().reset_index()
     st.subheader("📈 Monthly Sales Trend")
-    fig = px.line(monthly_sales, x="Month", y="Total Amount", title="Monthly Revenue", markers=True)
+    fig = px.line(monthly_sales, x="Month", y="Total Amount", title="Monthly Revenue", markers=True, color_discrete_sequence=['royalblue'])
     st.plotly_chart(fig, use_container_width=True)
 
     # Heatmap
@@ -59,29 +60,47 @@ if uploaded_file:
     sns.heatmap(pivot, cmap="YlGnBu", annot=True, fmt=".0f", ax=ax)
     st.pyplot(fig)
 
-    # ABC Analysis
+    # ABC Analysis by Revenue, Quantity, Frequency
     st.subheader("🔹 ABC Analysis")
     abc_df = df.groupby("Product Category").agg({"Total Amount": "sum", "Quantity": "sum", "Transaction ID": "count"}).reset_index()
     abc_df.columns = ["Product Category", "Revenue", "Quantity", "Frequency"]
-    abc_df = abc_df.sort_values("Revenue", ascending=False)
-    abc_df["Revenue%"] = 100 * abc_df["Revenue"] / abc_df["Revenue"].sum()
-    abc_df["CumRevenue%"] = abc_df["Revenue%"].cumsum()
-    abc_df["Class"] = pd.cut(abc_df["CumRevenue%"], bins=[0, 70, 90, 100], labels=["A", "B", "C"])
+    for col in ["Revenue", "Quantity", "Frequency"]:
+        abc_df[f"{col}%"] = 100 * abc_df[col] / abc_df[col].sum()
+        abc_df[f"Cum{col}%"] = abc_df[f"{col}%"].cumsum()
+        abc_df[f"{col}_Class"] = pd.cut(abc_df[f"Cum{col}%"], bins=[0, 70, 90, 100], labels=["A", "B", "C"])
     st.dataframe(abc_df)
+
+    # Inventory Metrics
+    st.subheader("📦 Inventory Metrics")
+    inventory_df = df.groupby("Product Category").agg({"Quantity": "sum", "Total Amount": "sum"}).reset_index()
+    inventory_df["Average Daily Sales"] = inventory_df["Quantity"] / ((df["Date"].max() - df["Date"].min()).days + 1)
+    inventory_df["Days of Supply"] = np.where(inventory_df["Average Daily Sales"] > 0, inventory_df["Quantity"] / inventory_df["Average Daily Sales"], np.nan)
+    inventory_df["Stockouts"] = df[df["Quantity"] == 0].groupby("Product Category")["Transaction ID"].count()
+    inventory_df["Stockouts"] = inventory_df["Stockouts"].fillna(0).astype(int)
+    st.dataframe(inventory_df)
+
+    # Customer Clustering
+    st.subheader("👥 Customer Segmentation (K-Means Clustering)")
+    customer_data = df.groupby("Customer ID").agg({"Total Amount": "sum", "Quantity": "sum", "Transaction ID": "count"}).reset_index()
+    customer_data.columns = ["Customer ID", "Revenue", "Quantity", "Frequency"]
+    kmeans = KMeans(n_clusters=3, random_state=42)
+    customer_data["Cluster"] = kmeans.fit_predict(customer_data[["Revenue", "Quantity", "Frequency"]])
+    fig = px.scatter_3d(customer_data, x="Revenue", y="Quantity", z="Frequency", color="Cluster", symbol="Cluster")
+    st.plotly_chart(fig, use_container_width=True)
 
     # Forecasting
     st.subheader("🔮 Sales Forecasting")
     forecast_model = st.selectbox("Select Forecasting Model", ["Holt-Winters", "Prophet", "Random Forest", "XGBoost"])
 
-    sales_by_date = df.groupby("Date")["Total Amount"].sum().reset_index()
-    sales_by_date = sales_by_date.sort_values("Date")
+    sales_by_date = df.groupby("Date")["Total Amount"].sum().reset_index().sort_values("Date")
+    forecast_df = pd.DataFrame()
 
     if forecast_model == "Holt-Winters":
         from statsmodels.tsa.holtwinters import ExponentialSmoothing
         model = ExponentialSmoothing(sales_by_date["Total Amount"], trend='add', seasonal='add', seasonal_periods=12)
         fit = model.fit()
-        forecast = fit.forecast(12)
-        forecast_df = pd.DataFrame({"Date": pd.date_range(start=sales_by_date["Date"].max(), periods=12, freq='M'), "Forecast": forecast})
+        forecast = fit.forecast(90)
+        forecast_df = pd.DataFrame({"Date": pd.date_range(start=sales_by_date["Date"].max() + pd.Timedelta(days=1), periods=90), "Forecast": forecast})
 
     elif forecast_model == "Prophet":
         prophet_df = sales_by_date.rename(columns={"Date": "ds", "Total Amount": "y"})
@@ -101,36 +120,32 @@ if uploaded_file:
         X = df_ml[["Day", "Month", "Year"]]
         y = df_ml["Total Amount"]
 
-        if forecast_model == "Random Forest":
-            model = RandomForestRegressor()
-        else:
-            model = XGBRegressor()
-
+        model = RandomForestRegressor() if forecast_model == "Random Forest" else XGBRegressor()
         model.fit(X, y)
 
-        future_dates = pd.date_range(start=sales_by_date["Date"].max(), periods=90)
+        future_dates = pd.date_range(start=sales_by_date["Date"].max() + pd.Timedelta(days=1), periods=90)
         future_df = pd.DataFrame({"Date": future_dates})
         future_df["Day"] = future_df["Date"].dt.day
         future_df["Month"] = future_df["Date"].dt.month
         future_df["Year"] = future_df["Date"].dt.year
+        future_df["Forecast"] = model.predict(future_df[["Day", "Month", "Year"]])
+        forecast_df = future_df
 
-        forecast_df = future_df.copy()
-        forecast_df["Forecast"] = model.predict(future_df[["Day", "Month", "Year"]])
+    # Plot forecast vs actual
+    st.subheader("📊 Actual vs Forecasted Sales")
+    combined = pd.concat([sales_by_date.rename(columns={"Total Amount": "Actual"}), forecast_df], ignore_index=True)
+    fig2 = px.line(combined, x="Date", y=["Actual", "Forecast"], markers=True, title="Forecast vs Actual", color_discrete_map={"Actual": "green", "Forecast": "orange"})
+    st.plotly_chart(fig2, use_container_width=True)
 
-    # Plot forecast
-    st.line_chart(forecast_df.set_index("Date"))
+    # Accuracy
+    test_actual = sales_by_date["Total Amount"].tail(len(forecast_df)).values
+    test_forecast = forecast_df["Forecast"].values[:len(test_actual)]
 
-    # Evaluate accuracy on last 3 months
-    test_data = sales_by_date.tail(90)
-    test_true = test_data["Total Amount"]
-    if forecast_model == "Prophet":
-        test_pred = forecast_df["Forecast"].iloc[:90].values
+    if len(test_actual) == len(test_forecast):
+        rmse = mean_squared_error(test_actual, test_forecast, squared=False)
+        mape = np.mean(np.abs((test_actual - test_forecast) / test_actual)) * 100
+        st.markdown("#### Forecast Accuracy (Last Available Days)")
+        st.write(f"**MAPE**: {mape:.2f}%")
+        st.write(f"**RMSE**: {rmse:.2f}")
     else:
-        test_pred = forecast_df["Forecast"].head(90).values
-
-    rmse = mean_squared_error(test_true, test_pred, squared=False)
-    mape = np.mean(np.abs((test_true - test_pred) / test_true)) * 100
-
-    st.markdown("#### Forecast Accuracy (Last 3 Months)")
-    st.write(f"**MAPE**: {mape:.2f}%")
-    st.write(f"**RMSE**: {rmse:.2f}")
+        st.warning("Insufficient data overlap for forecast accuracy calculation.")
