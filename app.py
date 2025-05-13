@@ -3,19 +3,21 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
+import plotly.express as px
+
 from sklearn.metrics import mean_squared_error, mean_absolute_percentage_error
 from sklearn.ensemble import RandomForestRegressor
 from xgboost import XGBRegressor
 from prophet import Prophet
 from statsmodels.tsa.holtwinters import ExponentialSmoothing
-from statsmodels.tsa.arima.model import ARIMA
-from datetime import timedelta
+import warnings
+warnings.filterwarnings("ignore")
 
-st.set_page_config(page_title="MSME Forecasting App", layout="wide")
-st.title("📊 MSME Supply Chain Dashboard")
+st.set_page_config(page_title="MSME Forecasting Dashboard", layout="wide")
+st.title("📈 MSME Supply Chain Forecasting & Analysis Tool")
 
-# Upload Section
-uploaded_file = st.file_uploader("Upload your sales dataset (CSV/Excel)", type=["csv", "xlsx"])
+# Upload the data
+uploaded_file = st.file_uploader("Upload your sales Excel or CSV file", type=["xlsx", "csv"])
 
 if uploaded_file:
     if uploaded_file.name.endswith(".csv"):
@@ -23,117 +25,117 @@ if uploaded_file:
     else:
         df = pd.read_excel(uploaded_file)
 
-    # Show preview
-    st.subheader("📄 Data Preview")
-    st.dataframe(df.head())
+    st.subheader("Step 1: Data Mapping and Filtering")
+    st.write("Preview of dataset:", df.head())
 
-    # Column selectors
-    date_col = st.selectbox("Select Date column", df.columns)
-    sales_col = st.selectbox("Select Sales/Revenue column", df.columns)
-    product_col = st.selectbox("Select Product Category column (Optional)", [None] + list(df.columns))
+    date_col = st.selectbox("Select Date Column", df.columns)
+    sales_col = st.selectbox("Select Sales Column", df.columns)
+    product_col = st.selectbox("Select Product Category Column (optional)", ["None"] + list(df.columns))
 
     df[date_col] = pd.to_datetime(df[date_col])
     df = df.sort_values(date_col)
 
-    if product_col:
-        product_selected = st.selectbox("Select a Product Category to Filter", df[product_col].unique())
+    if product_col != "None":
+        product_selected = st.selectbox("Choose Product Category to Analyze", df[product_col].unique())
         df = df[df[product_col] == product_selected]
 
-    # Group by Date if necessary
-    daily_data = df.groupby(date_col)[sales_col].sum().reset_index()
-    daily_data.set_index(date_col, inplace=True)
+    df_grouped = df.groupby(date_col)[sales_col].sum().reset_index()
+    df_grouped.columns = ["ds", "y"]
 
-    # Visualizations
-    st.subheader("📊 Exploratory Data Analysis")
-    tab1, tab2, tab3 = st.tabs(["Line Chart", "Bar Chart", "Boxplot"])
+    st.write("Aggregated Sales Data:", df_grouped.tail())
 
-    with tab1:
-        st.line_chart(daily_data)
-    with tab2:
-        st.bar_chart(daily_data)
-    with tab3:
-        fig, ax = plt.subplots()
-        sns.boxplot(data=daily_data, y=sales_col, ax=ax)
-        st.pyplot(fig)
+    forecast_horizon = st.slider("Select Forecast Horizon (months)", 3, 12, 6)
+    model_type = st.selectbox("Select Forecasting Model", ["Holt-Winters", "ARIMA", "Prophet", "Random Forest", "XGBoost"])
 
-    # Forecasting Model Selection
-    st.subheader("🔮 Select Forecasting Model")
-    model_option = st.selectbox("Choose Model", ["Holt-Winters", "ARIMA", "Prophet", "Random Forest", "XGBoost"])
+    forecast = None
+    mape = None
+    rmse = None
 
-    forecast_period = st.slider("Select forecast period (months)", 3, 12, 6)
-    test_data = daily_data[-90:]  # Last 3 months as test
+    # Splitting into train and test
+    df_grouped = df_grouped.set_index("ds").resample("M").sum().reset_index()
+    train = df_grouped[:-3]
+    test = df_grouped[-3:]
 
-    def evaluate(y_true, y_pred):
-        mape = mean_absolute_percentage_error(y_true, y_pred) * 100
-        rmse = mean_squared_error(y_true, y_pred, squared=False)
-        return mape, rmse
+    st.subheader("Step 2: Forecast Results")
 
-    st.subheader("📈 Forecast Results")
-
-    if model_option == "Holt-Winters":
-        try:
-            model = ExponentialSmoothing(daily_data[sales_col], trend='add', seasonal='add', seasonal_periods=30)
+    try:
+        if model_type == "Holt-Winters":
+            model = ExponentialSmoothing(train["y"], trend="add", seasonal="add", seasonal_periods=12)
             fit = model.fit()
-            forecast = fit.forecast(forecast_period * 30)
-            st.line_chart(forecast)
-            mape, rmse = evaluate(test_data, fit.fittedvalues[-90:])
-        except Exception as e:
-            st.error(f"Holt-Winters Error: {e}")
+            forecast = fit.forecast(forecast_horizon)
 
-    elif model_option == "ARIMA":
-        try:
-            model = ARIMA(daily_data[sales_col], order=(5,1,0))
-            fit = model.fit()
-            forecast = fit.forecast(steps=forecast_period * 30)
-            st.line_chart(forecast)
-            mape, rmse = evaluate(test_data, fit.fittedvalues[-90:])
-        except Exception as e:
-            st.error(f"ARIMA Error: {e}")
-
-    elif model_option == "Prophet":
-        try:
-            prophet_df = daily_data.reset_index().rename(columns={date_col: 'ds', sales_col: 'y'})
+        elif model_type == "Prophet":
+            prophet_df = train.rename(columns={"ds": "ds", "y": "y"})
             model = Prophet()
             model.fit(prophet_df)
-            future = model.make_future_dataframe(periods=forecast_period * 30)
-            forecast = model.predict(future)
-            fig1 = model.plot(forecast)
-            st.pyplot(fig1)
-            pred = forecast.set_index('ds').loc[test_data.index]['yhat']
-            mape, rmse = evaluate(test_data, pred)
-        except Exception as e:
-            st.error(f"Prophet Error: {e}")
+            future = model.make_future_dataframe(periods=forecast_horizon, freq='M')
+            forecast_df = model.predict(future)
+            forecast = forecast_df.set_index("ds")["yhat"].tail(forecast_horizon)
 
-    elif model_option == "Random Forest":
-        try:
-            df_rf = daily_data.copy()
-            df_rf['day'] = np.arange(len(df_rf))
-            model = RandomForestRegressor()
-            model.fit(df_rf[['day']], df_rf[sales_col])
-            future_days = np.arange(len(df_rf), len(df_rf) + forecast_period * 30)
-            forecast = pd.Series(model.predict(future_days.reshape(-1, 1)),
-                                 index=pd.date_range(df_rf.index[-1] + timedelta(days=1), periods=forecast_period * 30))
-            st.line_chart(forecast)
-            pred = model.predict(df_rf[['day']].tail(90))
-            mape, rmse = evaluate(test_data, pred)
-        except Exception as e:
-            st.error(f"Random Forest Error: {e}")
+        elif model_type == "Random Forest":
+            train_rf = train.copy()
+            train_rf['month'] = train_rf['ds'].dt.month
+            X_train = train_rf[['month']]
+            y_train = train_rf['y']
 
-    elif model_option == "XGBoost":
-        try:
-            df_xgb = daily_data.copy()
-            df_xgb['day'] = np.arange(len(df_xgb))
-            model = XGBRegressor()
-            model.fit(df_xgb[['day']], df_xgb[sales_col])
-            future_days = np.arange(len(df_xgb), len(df_xgb) + forecast_period * 30)
-            forecast = pd.Series(model.predict(future_days.reshape(-1, 1)),
-                                 index=pd.date_range(df_xgb.index[-1] + timedelta(days=1), periods=forecast_period * 30))
-            st.line_chart(forecast)
-            pred = model.predict(df_xgb[['day']].tail(90))
-            mape, rmse = evaluate(test_data, pred)
-        except Exception as e:
-            st.error(f"XGBoost Error: {e}")
+            rf = RandomForestRegressor()
+            rf.fit(X_train, y_train)
 
-    st.subheader("📊 Forecast Accuracy (Last 3 Months)")
-    st.write(f"**MAPE**: {mape:.2f}%")
-    st.write(f"**RMSE**: {rmse:.2f}")
+            future_months = [(train_rf['ds'].max() + pd.DateOffset(months=i)).month for i in range(1, forecast_horizon+1)]
+            forecast = pd.Series(rf.predict(np.array(future_months).reshape(-1, 1)))
+
+        elif model_type == "XGBoost":
+            train_xgb = train.copy()
+            train_xgb['month'] = train_xgb['ds'].dt.month
+            X_train = train_xgb[['month']]
+            y_train = train_xgb['y']
+
+            xgb = XGBRegressor(objective="reg:squarederror")
+            xgb.fit(X_train, y_train)
+
+            future_months = [(train_xgb['ds'].max() + pd.DateOffset(months=i)).month for i in range(1, forecast_horizon+1)]
+            forecast = pd.Series(xgb.predict(np.array(future_months).reshape(-1, 1)))
+
+        if forecast is not None:
+            forecast.index = pd.date_range(start=train["ds"].max() + pd.DateOffset(months=1), periods=forecast_horizon, freq='M')
+            forecast_df = pd.DataFrame({"Date": forecast.index, "Forecast": forecast.values})
+
+            fig1 = px.line(df_grouped, x="ds", y="y", title="Historical Sales")
+            fig1.add_scatter(x=forecast_df["Date"], y=forecast_df["Forecast"], mode='lines', name='Forecast')
+            st.plotly_chart(fig1, use_container_width=True)
+
+            # Accuracy metrics on last 3 months
+            if len(test) >= 3:
+                actual = test["y"].values
+                predicted = forecast.head(3).values
+                mape = mean_absolute_percentage_error(actual, predicted) * 100
+                rmse = mean_squared_error(actual, predicted, squared=False)
+
+                st.subheader("Forecast Accuracy (Test Data: Last 3 Months)")
+                if mape is not None and not np.isnan(mape):
+                    st.write(f"**MAPE**: {mape:.2f}%")
+                else:
+                    st.warning("MAPE could not be calculated.")
+
+                if rmse is not None and not np.isnan(rmse):
+                    st.write(f"**RMSE**: {rmse:.2f}")
+                else:
+                    st.warning("RMSE could not be calculated.")
+
+            st.subheader("Forecast Table")
+            st.dataframe(forecast_df)
+
+    except Exception as e:
+        st.error(f"Model error: {e}")
+
+    # Additional Analysis
+    st.subheader("Step 3: Additional Visualizations")
+    col1, col2 = st.columns(2)
+
+    with col1:
+        fig2 = px.box(df, x=product_col if product_col != "None" else sales_col, y=sales_col, title="Boxplot Analysis")
+        st.plotly_chart(fig2, use_container_width=True)
+
+    with col2:
+        fig3 = px.histogram(df, x=sales_col, nbins=30, title="Sales Distribution")
+        st.plotly_chart(fig3, use_container_width=True)
