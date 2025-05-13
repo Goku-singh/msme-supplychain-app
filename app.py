@@ -145,3 +145,66 @@ if file is not None:
 
 else:
     st.info("Please upload a CSV file to get started.")
+
+
+# ---- 📌 KPI Section ----
+        st.markdown("### 🔢 Key Performance Indicators")
+
+        # Ensure required columns exist
+        required_cols = ["Revenue", "Order ID", "Customer ID", "Date"]
+        for col in required_cols:
+            if col not in df.columns:
+                st.error(f"Missing column: `{col}` required for KPI metrics.")
+                st.stop()
+
+        total_revenue = df["Revenue"].sum()
+        total_orders = df["Order ID"].nunique()
+        total_customers = df["Customer ID"].nunique()
+        aov = total_revenue / total_orders if total_orders else 0
+
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("💰 Total Revenue", f"₹ {total_revenue:,.2f}")
+        col2.metric("📄 Total Orders", f"{total_orders}")
+        col3.metric("👤 Unique Customers", f"{total_customers}")
+        col4.metric("📦 Avg. Order Value (AOV)", f"₹ {aov:,.2f}")
+
+        # ---- 🗃️ Filters Section ----
+        st.markdown("### 🧰 Apply Filters")
+
+        with st.expander("🔍 Filter Data"):
+            # Date Range
+            min_date = df["Date"].min()
+            max_date = df["Date"].max()
+            date_range = st.date_input("Select Date Range", [min_date, max_date])
+
+            # Product Category
+            category_options = df["Product Category"].dropna().unique().tolist() if "Product Category" in df.columns else []
+            selected_categories = st.multiselect("Select Product Category", category_options, default=category_options)
+
+            # Customer Segment
+            segment_options = df["Customer Segment"].dropna().unique().tolist() if "Customer Segment" in df.columns else []
+            selected_segments = st.multiselect("Select Customer Segment", segment_options, default=segment_options)
+
+        # Apply filters
+        filtered_df = df.copy()
+        if "Date" in df.columns:
+            filtered_df = filtered_df[(filtered_df["Date"] >= pd.to_datetime(date_range[0])) &
+                                      (filtered_df["Date"] <= pd.to_datetime(date_range[1]))]
+        if "Product Category" in df.columns:
+            filtered_df = filtered_df[filtered_df["Product Category"].isin(selected_categories)]
+        if "Customer Segment" in df.columns:
+            filtered_df = filtered_df[filtered_df["Customer Segment"].isin(selected_segments)]
+
+        st.markdown("### 📂 Filtered Data Preview")
+        st.dataframe(filtered_df)
+
+        # ---- Plot Section (optional) ----
+        if "Date" in filtered_df.columns and "Quantity" in filtered_df.columns:
+            st.markdown("### 📈 Quantity Over Time")
+            fig = px.line(filtered_df.dropna(subset=["Date"]),
+                          x="Date", y="Quantity", title="Quantity Trend (Filtered)")
+            st.plotly_chart(fig, use_container_width=True)
+
+    except Exception as e:
+        st.error("An error occurred while processing your file.")
+        st.exception(e)
